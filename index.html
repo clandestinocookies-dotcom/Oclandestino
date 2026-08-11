@@ -2,9 +2,13 @@ import { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import {
   Plus, Trash2, TrendingUp, TrendingDown, Wallet, Loader2,
-  LayoutDashboard, ListOrdered, Settings, Menu, X, CheckCircle2, AlertCircle, Database,
-  Landmark, CreditCard, LineChart as LineChartIcon,
+  LayoutDashboard, ListOrdered, Settings, Menu, X, CheckCircle2, AlertCircle,
+  Landmark, CreditCard, LineChart as LineChartIcon, LogOut, Mail, Lock,
 } from "lucide-react";
+
+// ---------- Backend fixo (embutido, não editável pelo usuário final) ----------
+const SUPABASE_URL = "https://vgpdzcewjzjavyfjemin.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_J14Uz-G1bwDF20C8KPV38g_fSPOo4Px";
 
 const CATEGORIES = {
   expense: ["Moradia", "Alimentação", "Transporte", "Saúde", "Lazer", "Educação", "Outros"],
@@ -17,11 +21,33 @@ const COLORS = ["#4F46E5", "#16A34A", "#F59E0B", "#DC2626", "#9333EA", "#0891B2"
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const fmt = (n) => Number(n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-// ---------- Cliente Supabase genérico (REST via fetch) ----------
-function makeTableClient(url, key, table) {
-  if (!url || !key || !table) return null;
-  const base = `${url.replace(/\/$/, "")}/rest/v1/${table}`;
-  const headers = { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+// ---------- Auth (Supabase Auth REST, sem lib externa) ----------
+const authBase = `${SUPABASE_URL}/auth/v1`;
+async function signUp(email, password) {
+  const r = await fetch(`${authBase}/signup`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.msg || data.error_description || "Erro ao cadastrar.");
+  return data;
+}
+async function signIn(email, password) {
+  const r = await fetch(`${authBase}/token?grant_type=password`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.msg || data.error_description || "E-mail ou senha inválidos.");
+  return data; // { access_token, refresh_token, user }
+}
+
+// ---------- Cliente REST por tabela, autenticado com o token do usuário ----------
+function makeTableClient(accessToken, table) {
+  const base = `${SUPABASE_URL}/rest/v1/${table}`;
+  const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
   return {
     async list(order = "id.desc") {
       const r = await fetch(`${base}?select=*&order=${order}`, { headers });
@@ -47,6 +73,7 @@ function makeTableClient(url, key, table) {
 
 const SQL_SCHEMA = `create table entries (
   id uuid default gen_random_uuid() primary key,
+  user_id uuid not null default auth.uid() references auth.users(id),
   type text not null,
   desc text not null,
   amount numeric not null,
@@ -56,6 +83,7 @@ const SQL_SCHEMA = `create table entries (
 
 create table accounts (
   id uuid default gen_random_uuid() primary key,
+  user_id uuid not null default auth.uid() references auth.users(id),
   name text not null,
   type text not null,
   balance numeric not null default 0
@@ -63,6 +91,7 @@ create table accounts (
 
 create table loans (
   id uuid default gen_random_uuid() primary key,
+  user_id uuid not null default auth.uid() references auth.users(id),
   name text not null,
   total numeric not null default 0,
   installments int not null,
@@ -72,6 +101,7 @@ create table loans (
 
 create table investments (
   id uuid default gen_random_uuid() primary key,
+  user_id uuid not null default auth.uid() references auth.users(id),
   name text not null,
   type text not null,
   invested numeric not null,
@@ -83,10 +113,10 @@ alter table accounts enable row level security;
 alter table loans enable row level security;
 alter table investments enable row level security;
 
-create policy "public access" on entries for all using (true) with check (true);
-create policy "public access" on accounts for all using (true) with check (true);
-create policy "public access" on loans for all using (true) with check (true);
-create policy "public access" on investments for all using (true) with check (true);`;
+create policy "own rows" on entries for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own rows" on accounts for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own rows" on loans for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own rows" on investments for all using (auth.uid() = user_id) with check (auth.uid() = user_id);`;
 
 const TABS = [
   { id: "dashboard", label: "Painel", icon: LayoutDashboard },
@@ -94,13 +124,91 @@ const TABS = [
   { id: "accounts", label: "Contas", icon: Landmark },
   { id: "loans", label: "Financiamentos", icon: CreditCard },
   { id: "investments", label: "Investimentos", icon: LineChartIcon },
-  { id: "settings", label: "Configurações", icon: Settings },
 ];
 
+// =====================================================================
+// TELA DE LOGIN / CADASTRO
+// =====================================================================
+function AuthScreen({ onAuthed }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(""); setInfo(""); setBusy(true);
+    try {
+      if (mode === "login") {
+        const session = await signIn(email, password);
+        onAuthed(session);
+      } else {
+        await signUp(email, password);
+        setInfo("Conta criada! Verifica teu e-mail se a confirmação estiver ativa, ou já entra abaixo.");
+        setMode("login");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif", padding: 20 }}>
+      <div style={{ width: "100%", maxWidth: 380, background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 16, padding: 28, boxShadow: "0 1px 2px rgba(15,23,42,0.04)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, fontSize: 19, marginBottom: 4, color: "#0F172A" }}>
+          <Wallet size={22} color="#4F46E5" /> Finanças
+        </div>
+        <p style={{ fontSize: 13, color: "#64748B", marginTop: 0, marginBottom: 22 }}>
+          {mode === "login" ? "Entra na tua conta" : "Cria tua conta"}
+        </p>
+
+        {error && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#FEF2F2", color: "#B91C1C", border: "1px solid #FCA5A5", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 14 }}>
+            <AlertCircle size={15} /> {error}
+          </div>
+        )}
+        {info && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#F0FDF4", color: "#15803D", border: "1px solid #86EFAC", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 14 }}>
+            <CheckCircle2 size={15} /> {info}
+          </div>
+        )}
+
+        <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ position: "relative" }}>
+            <Mail size={15} color="#94A3B8" style={{ position: "absolute", left: 11, top: 12 }} />
+            <input type="email" required placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} />
+          </div>
+          <div style={{ position: "relative" }}>
+            <Lock size={15} color="#94A3B8" style={{ position: "absolute", left: 11, top: 12 }} />
+            <input type="password" required minLength={6} placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} />
+          </div>
+          <button type="submit" disabled={busy} style={{ ...primaryBtn2, width: "100%", justifyContent: "center", display: "flex", alignItems: "center", gap: 8, opacity: busy ? 0.7 : 1 }}>
+            {busy && <Loader2 size={14} className="animate-spin" />}
+            {mode === "login" ? "Entrar" : "Criar conta"}
+          </button>
+        </form>
+
+        <button onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); setInfo(""); }} style={{ background: "none", border: "none", color: "#4F46E5", fontSize: 13, cursor: "pointer", marginTop: 16, width: "100%" }}>
+          {mode === "login" ? "Não tem conta? Cadastra aqui" : "Já tem conta? Entra aqui"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// APP PRINCIPAL
+// =====================================================================
 export default function FinanceTracker() {
+  const [session, setSession] = useState(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [tab, setTab] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState(null);
 
   const [entries, setEntries] = useState([]);
@@ -108,96 +216,76 @@ export default function FinanceTracker() {
   const [loans, setLoans] = useState([]);
   const [investments, setInvestments] = useState([]);
 
-  const [config, setConfig] = useState({ url: "", key: "" });
-  const [configDraft, setConfigDraft] = useState({ url: "", key: "" });
-
   const [form, setForm] = useState({ type: "expense", desc: "", amount: "", category: CATEGORIES.expense[0] });
   const [accForm, setAccForm] = useState({ name: "", type: ACCOUNT_TYPES[0], balance: "" });
   const [loanForm, setLoanForm] = useState({ name: "", total: "", installments: "", paid: "", installmentValue: "" });
   const [invForm, setInvForm] = useState({ name: "", type: INVEST_TYPES[0], invested: "", current: "" });
-
   const [monthFilter, setMonthFilter] = useState(new Date().toISOString().slice(0, 7));
 
-  const connected = !!(config.url && config.key);
-  const clients = useMemo(() => connected ? {
-    entries: makeTableClient(config.url, config.key, "entries"),
-    accounts: makeTableClient(config.url, config.key, "accounts"),
-    loans: makeTableClient(config.url, config.key, "loans"),
-    investments: makeTableClient(config.url, config.key, "investments"),
-  } : null, [config, connected]);
+  const clients = useMemo(() => session ? {
+    entries: makeTableClient(session.access_token, "entries"),
+    accounts: makeTableClient(session.access_token, "accounts"),
+    loans: makeTableClient(session.access_token, "loans"),
+    investments: makeTableClient(session.access_token, "investments"),
+  } : null, [session]);
 
-  async function loadLocal(key, fallback) {
-    try {
-      const res = await window.storage.get(key, false);
-      return res?.value ? JSON.parse(res.value) : fallback;
-    } catch (e) { return fallback; }
-  }
-  async function saveLocal(key, value, setter) {
-    setter(value);
-    try {
-      const res = await window.storage.set(key, JSON.stringify(value), false);
-      if (!res) setStatus({ type: "error", text: "Não consegui salvar." });
-    } catch (e) { setStatus({ type: "error", text: "Erro ao salvar dados." }); }
-  }
-
-  async function loadAllFromSupabase(c) {
-    const [rawEntries, rawAccounts, rawLoans, rawInvestments] = await Promise.all([
-      c.entries.list("date.desc"), c.accounts.list(), c.loans.list(), c.investments.list(),
-    ]);
-    setEntries(rawEntries.map((r) => ({ ...r, desc: r.desc ?? r.description })));
-    setAccounts(rawAccounts);
-    setLoans(rawLoans.map((l) => ({ ...l, installmentValue: l.installment_value })));
-    setInvestments(rawInvestments.map((i) => ({ ...i, current: i.current_value })));
-  }
-
+  // restaura sessão salva
   useEffect(() => {
     (async () => {
-      const cfg = await loadLocal("supabase_config", { url: "", key: "" });
-      setConfig(cfg);
-      setConfigDraft(cfg);
-
-      if (cfg.url && cfg.key) {
-        const c = {
-          entries: makeTableClient(cfg.url, cfg.key, "entries"),
-          accounts: makeTableClient(cfg.url, cfg.key, "accounts"),
-          loans: makeTableClient(cfg.url, cfg.key, "loans"),
-          investments: makeTableClient(cfg.url, cfg.key, "investments"),
-        };
-        try { await loadAllFromSupabase(c); }
-        catch (e) { setStatus({ type: "error", text: "Erro lendo Supabase: " + e.message }); }
-      } else {
-        setEntries(await loadLocal("entries", []));
-        setAccounts(await loadLocal("accounts", []));
-        setLoans(await loadLocal("loans", []));
-        setInvestments(await loadLocal("investments", []));
-      }
-      setLoading(false);
+      try {
+        const res = await window.storage.get("session", false);
+        if (res?.value) setSession(JSON.parse(res.value));
+      } catch (e) {}
+      setCheckingSession(false);
     })();
   }, []);
+
+  async function handleAuthed(newSession) {
+    try { await window.storage.set("session", JSON.stringify(newSession), false); } catch (e) {}
+    setSession(newSession);
+  }
+  async function logout() {
+    try { await window.storage.delete("session", false); } catch (e) {}
+    setSession(null);
+    setEntries([]); setAccounts([]); setLoans([]); setInvestments([]);
+  }
+
+  // carrega dados quando loga
+  useEffect(() => {
+    if (!clients) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const [rawEntries, rawAccounts, rawLoans, rawInvestments] = await Promise.all([
+          clients.entries.list("date.desc"), clients.accounts.list(), clients.loans.list(), clients.investments.list(),
+        ]);
+        setEntries(rawEntries.map((r) => ({ ...r, desc: r.desc ?? r.description })));
+        setAccounts(rawAccounts);
+        setLoans(rawLoans.map((l) => ({ ...l, installmentValue: l.installment_value })));
+        setInvestments(rawInvestments.map((i) => ({ ...i, current: i.current_value })));
+      } catch (e) {
+        setStatus({ type: "error", text: "Sessão expirou ou erro de conexão. Entra de novo." });
+        logout();
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [clients]);
 
   // ---- Lançamentos ----
   async function addEntry(e) {
     e.preventDefault();
     const amount = parseFloat(String(form.amount).replace(",", "."));
     if (!form.desc.trim() || !amount || amount <= 0) return;
-    const entry = { id: uid(), type: form.type, desc: form.desc.trim(), amount, category: form.category, date: new Date().toISOString() };
-    if (clients) {
-      try {
-        const [saved] = await clients.entries.insert({ type: entry.type, desc: entry.desc, amount: entry.amount, category: entry.category, date: entry.date });
-        setEntries((prev) => [{ ...saved, desc: saved.desc ?? saved.description }, ...prev]);
-      } catch (err) { setStatus({ type: "error", text: err.message }); return; }
-    } else {
-      await saveLocal("entries", [entry, ...entries], setEntries);
-    }
-    setForm({ type: form.type, desc: "", amount: "", category: CATEGORIES[form.type][0] });
+    try {
+      const [saved] = await clients.entries.insert({ type: form.type, desc: form.desc.trim(), amount, category: form.category, date: new Date().toISOString() });
+      setEntries((prev) => [{ ...saved, desc: saved.desc ?? saved.description }, ...prev]);
+      setForm({ type: form.type, desc: "", amount: "", category: CATEGORIES[form.type][0] });
+    } catch (err) { setStatus({ type: "error", text: err.message }); }
   }
   async function removeEntry(id) {
-    if (clients) {
-      try { await clients.entries.remove(id); setEntries((prev) => prev.filter((e) => e.id !== id)); }
-      catch (err) { setStatus({ type: "error", text: err.message }); }
-    } else {
-      await saveLocal("entries", entries.filter((e) => e.id !== id), setEntries);
-    }
+    try { await clients.entries.remove(id); setEntries((prev) => prev.filter((e) => e.id !== id)); }
+    catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
   // ---- Contas ----
@@ -205,24 +293,15 @@ export default function FinanceTracker() {
     e.preventDefault();
     const balance = parseFloat(String(accForm.balance).replace(",", "."));
     if (!accForm.name.trim() || isNaN(balance)) return;
-    if (clients) {
-      try {
-        const [saved] = await clients.accounts.insert({ name: accForm.name.trim(), type: accForm.type, balance });
-        setAccounts((prev) => [saved, ...prev]);
-      } catch (err) { setStatus({ type: "error", text: err.message }); return; }
-    } else {
-      const acc = { id: uid(), name: accForm.name.trim(), type: accForm.type, balance };
-      await saveLocal("accounts", [acc, ...accounts], setAccounts);
-    }
-    setAccForm({ name: "", type: accForm.type, balance: "" });
+    try {
+      const [saved] = await clients.accounts.insert({ name: accForm.name.trim(), type: accForm.type, balance });
+      setAccounts((prev) => [saved, ...prev]);
+      setAccForm({ name: "", type: accForm.type, balance: "" });
+    } catch (err) { setStatus({ type: "error", text: err.message }); }
   }
   async function removeAccount(id) {
-    if (clients) {
-      try { await clients.accounts.remove(id); setAccounts((prev) => prev.filter((a) => a.id !== id)); }
-      catch (err) { setStatus({ type: "error", text: err.message }); }
-    } else {
-      await saveLocal("accounts", accounts.filter((a) => a.id !== id), setAccounts);
-    }
+    try { await clients.accounts.remove(id); setAccounts((prev) => prev.filter((a) => a.id !== id)); }
+    catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
   // ---- Financiamentos ----
@@ -233,38 +312,24 @@ export default function FinanceTracker() {
     const paid = parseInt(loanForm.paid || "0", 10);
     const installmentValue = parseFloat(String(loanForm.installmentValue).replace(",", "."));
     if (!loanForm.name.trim() || !installments || !installmentValue) return;
-    const totalCalc = total || installmentValue * installments;
-    if (clients) {
-      try {
-        const [saved] = await clients.loans.insert({ name: loanForm.name.trim(), total: totalCalc, installments, paid: paid || 0, installment_value: installmentValue });
-        setLoans((prev) => [{ ...saved, installmentValue: saved.installment_value }, ...prev]);
-      } catch (err) { setStatus({ type: "error", text: err.message }); return; }
-    } else {
-      const loan = { id: uid(), name: loanForm.name.trim(), total: totalCalc, installments, paid: paid || 0, installmentValue };
-      await saveLocal("loans", [loan, ...loans], setLoans);
-    }
-    setLoanForm({ name: "", total: "", installments: "", paid: "", installmentValue: "" });
+    try {
+      const [saved] = await clients.loans.insert({ name: loanForm.name.trim(), total: total || installmentValue * installments, installments, paid: paid || 0, installment_value: installmentValue });
+      setLoans((prev) => [{ ...saved, installmentValue: saved.installment_value }, ...prev]);
+      setLoanForm({ name: "", total: "", installments: "", paid: "", installmentValue: "" });
+    } catch (err) { setStatus({ type: "error", text: err.message }); }
   }
   async function bumpLoan(id, delta) {
     const loan = loans.find((l) => l.id === id);
     if (!loan) return;
     const paid = Math.max(0, Math.min(loan.installments, loan.paid + delta));
-    if (clients) {
-      try {
-        await clients.loans.update(id, { paid });
-        setLoans((prev) => prev.map((l) => l.id === id ? { ...l, paid } : l));
-      } catch (err) { setStatus({ type: "error", text: err.message }); }
-    } else {
-      await saveLocal("loans", loans.map((l) => l.id === id ? { ...l, paid } : l), setLoans);
-    }
+    try {
+      await clients.loans.update(id, { paid });
+      setLoans((prev) => prev.map((l) => l.id === id ? { ...l, paid } : l));
+    } catch (err) { setStatus({ type: "error", text: err.message }); }
   }
   async function removeLoan(id) {
-    if (clients) {
-      try { await clients.loans.remove(id); setLoans((prev) => prev.filter((l) => l.id !== id)); }
-      catch (err) { setStatus({ type: "error", text: err.message }); }
-    } else {
-      await saveLocal("loans", loans.filter((l) => l.id !== id), setLoans);
-    }
+    try { await clients.loans.remove(id); setLoans((prev) => prev.filter((l) => l.id !== id)); }
+    catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
   // ---- Investimentos ----
@@ -273,56 +338,15 @@ export default function FinanceTracker() {
     const invested = parseFloat(String(invForm.invested).replace(",", "."));
     const current = parseFloat(String(invForm.current).replace(",", "."));
     if (!invForm.name.trim() || isNaN(invested)) return;
-    const currentVal = isNaN(current) ? invested : current;
-    if (clients) {
-      try {
-        const [saved] = await clients.investments.insert({ name: invForm.name.trim(), type: invForm.type, invested, current_value: currentVal });
-        setInvestments((prev) => [{ ...saved, current: saved.current_value }, ...prev]);
-      } catch (err) { setStatus({ type: "error", text: err.message }); return; }
-    } else {
-      const inv = { id: uid(), name: invForm.name.trim(), type: invForm.type, invested, current: currentVal };
-      await saveLocal("investments", [inv, ...investments], setInvestments);
-    }
-    setInvForm({ name: "", type: invForm.type, invested: "", current: "" });
+    try {
+      const [saved] = await clients.investments.insert({ name: invForm.name.trim(), type: invForm.type, invested, current_value: isNaN(current) ? invested : current });
+      setInvestments((prev) => [{ ...saved, current: saved.current_value }, ...prev]);
+      setInvForm({ name: "", type: invForm.type, invested: "", current: "" });
+    } catch (err) { setStatus({ type: "error", text: err.message }); }
   }
   async function removeInvestment(id) {
-    if (clients) {
-      try { await clients.investments.remove(id); setInvestments((prev) => prev.filter((i) => i.id !== id)); }
-      catch (err) { setStatus({ type: "error", text: err.message }); }
-    } else {
-      await saveLocal("investments", investments.filter((i) => i.id !== id), setInvestments);
-    }
-  }
-
-  // ---- Config Supabase ----
-  async function saveConfig(e) {
-    e.preventDefault();
-    try {
-      await window.storage.set("supabase_config", JSON.stringify(configDraft), false);
-      setConfig(configDraft);
-      if (configDraft.url && configDraft.key) {
-        const c = {
-          entries: makeTableClient(configDraft.url, configDraft.key, "entries"),
-          accounts: makeTableClient(configDraft.url, configDraft.key, "accounts"),
-          loans: makeTableClient(configDraft.url, configDraft.key, "loans"),
-          investments: makeTableClient(configDraft.url, configDraft.key, "investments"),
-        };
-        await loadAllFromSupabase(c);
-        setStatus({ type: "ok", text: "Conectado! Dados carregados do Supabase." });
-      }
-    } catch (err) {
-      setStatus({ type: "error", text: "Falha ao conectar: " + err.message });
-    }
-  }
-  async function disconnectSupabase() {
-    const empty = { url: "", key: "" };
-    await window.storage.set("supabase_config", JSON.stringify(empty), false);
-    setConfig(empty); setConfigDraft(empty);
-    setEntries(await loadLocal("entries", []));
-    setAccounts(await loadLocal("accounts", []));
-    setLoans(await loadLocal("loans", []));
-    setInvestments(await loadLocal("investments", []));
-    setStatus({ type: "ok", text: "Desconectado. Voltando a salvar localmente." });
+    try { await clients.investments.remove(id); setInvestments((prev) => prev.filter((i) => i.id !== id)); }
+    catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
   // ---- Derivados ----
@@ -353,12 +377,11 @@ export default function FinanceTracker() {
   const investCurrentTotal = useMemo(() => investments.reduce((s, i) => s + Number(i.current), 0), [investments]);
   const netWorth = accountsTotal + investCurrentTotal - loansRemaining;
 
-  if (loading) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 300, color: "#64748B", fontFamily: "'Inter', system-ui, sans-serif" }}>
-        <Loader2 className="animate-spin" size={20} style={{ marginRight: 8 }} /> Carregando...
-      </div>
-    );
+  if (checkingSession) {
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: "#64748B", fontFamily: "'Inter', system-ui, sans-serif" }}><Loader2 className="animate-spin" size={20} /></div>;
+  }
+  if (!session) {
+    return <AuthScreen onAuthed={handleAuthed} />;
   }
 
   return (
@@ -372,11 +395,13 @@ export default function FinanceTracker() {
         .btn-tab { transition: all .15s ease; }
         .row-hover:hover { background: #F1F5F9; }
         .progress-bg { background: #E2E8F0; }
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
 
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <aside style={{ width: menuOpen ? 230 : 0, overflow: "hidden", transition: "width .2s ease", borderRight: menuOpen ? "1px solid #E2E8F0" : "none", background: "#FFFFFF", flexShrink: 0 }}>
-          <div style={{ padding: 20, width: 230 }}>
+          <div style={{ padding: 20, width: 230, display: "flex", flexDirection: "column", height: "100%" }}>
             <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 28, display: "flex", alignItems: "center", gap: 8 }}>
               <Wallet size={20} color="#4F46E5" /> Finanças
             </div>
@@ -390,13 +415,15 @@ export default function FinanceTracker() {
                 </button>
               );
             })}
-            <div style={{ marginTop: 24, padding: "10px 12px", borderRadius: 10, background: "#F1F5F9", fontSize: 12, color: "#64748B", display: "flex", gap: 8, alignItems: "center" }}>
-              <Database size={14} color={connected ? "#16A34A" : "#94A3B8"} />
-              {connected ? "Sincronizado com Supabase" : "Salvando localmente"}
-            </div>
             <div style={{ marginTop: 12, padding: "12px", borderRadius: 10, background: "#EEF2FF", fontSize: 12, color: "#3730A3" }}>
               <div style={{ fontWeight: 700, marginBottom: 2 }}>Patrimônio líquido</div>
               <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(netWorth)}</div>
+            </div>
+            <div style={{ marginTop: "auto", paddingTop: 16, borderTop: "1px solid #F1F5F9" }}>
+              <div style={{ fontSize: 11.5, color: "#94A3B8", marginBottom: 8, wordBreak: "break-all" }}>{session.user?.email}</div>
+              <button onClick={logout} style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#64748B", cursor: "pointer", width: "100%" }}>
+                <LogOut size={14} /> Sair
+              </button>
             </div>
           </div>
         </aside>
@@ -424,240 +451,221 @@ export default function FinanceTracker() {
             </div>
           )}
 
-          {tab === "dashboard" && (
+          {loading ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#64748B", padding: "40px 0", justifyContent: "center" }}>
+              <Loader2 className="animate-spin" size={18} /> Carregando dados...
+            </div>
+          ) : (
             <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 14 }}>
-                <SummaryCard icon={<TrendingUp size={18} color="#16A34A" />} label="Entradas do mês" value={fmt(totals.income)} accent="#16A34A" />
-                <SummaryCard icon={<TrendingDown size={18} color="#DC2626" />} label="Saídas do mês" value={fmt(totals.expense)} accent="#DC2626" />
-                <SummaryCard icon={<Wallet size={18} color="#4F46E5" />} label="Saldo do mês" value={fmt(totals.balance)} accent={totals.balance < 0 ? "#DC2626" : "#4F46E5"} />
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
-                <SummaryCard icon={<Landmark size={18} color="#0891B2" />} label="Em contas/caixa" value={fmt(accountsTotal)} accent="#0891B2" />
-                <SummaryCard icon={<CreditCard size={18} color="#F59E0B" />} label="Financiamentos (falta)" value={fmt(loansRemaining)} accent="#F59E0B" />
-                <SummaryCard icon={<LineChartIcon size={18} color="#9333EA" />} label="Investido (atual)" value={fmt(investCurrentTotal)} accent="#9333EA" />
-              </div>
+              {tab === "dashboard" && (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 14 }}>
+                    <SummaryCard icon={<TrendingUp size={18} color="#16A34A" />} label="Entradas do mês" value={fmt(totals.income)} accent="#16A34A" />
+                    <SummaryCard icon={<TrendingDown size={18} color="#DC2626" />} label="Saídas do mês" value={fmt(totals.expense)} accent="#DC2626" />
+                    <SummaryCard icon={<Wallet size={18} color="#4F46E5" />} label="Saldo do mês" value={fmt(totals.balance)} accent={totals.balance < 0 ? "#DC2626" : "#4F46E5"} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 20 }}>
+                    <SummaryCard icon={<Landmark size={18} color="#0891B2" />} label="Em contas/caixa" value={fmt(accountsTotal)} accent="#0891B2" />
+                    <SummaryCard icon={<CreditCard size={18} color="#F59E0B" />} label="Financiamentos (falta)" value={fmt(loansRemaining)} accent="#F59E0B" />
+                    <SummaryCard icon={<LineChartIcon size={18} color="#9333EA" />} label="Investido (atual)" value={fmt(investCurrentTotal)} accent="#9333EA" />
+                  </div>
 
-              <form onSubmit={addEntry} className="card" style={{ padding: 18, marginBottom: 20 }}>
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  {["expense", "income"].map((t) => (
-                    <button type="button" key={t} onClick={() => setForm((f) => ({ ...f, type: t, category: CATEGORIES[t][0] }))}
-                      style={{ flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 700,
-                        border: "1px solid " + (form.type === t ? (t === "expense" ? "#DC2626" : "#16A34A") : "#E2E8F0"),
-                        background: form.type === t ? (t === "expense" ? "#FEF2F2" : "#F0FDF4") : "#FFFFFF",
-                        color: form.type === t ? (t === "expense" ? "#B91C1C" : "#15803D") : "#64748B" }}>
-                      {t === "expense" ? "Saída" : "Entrada"}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 8 }}>
-                  <input placeholder="Descrição" value={form.desc} onChange={(e) => setForm((f) => ({ ...f, desc: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Valor (R$)" inputMode="decimal" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} style={inputStyle} />
-                  <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} style={inputStyle}>
-                    {CATEGORIES[form.type].map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <button type="submit" style={{ background: "#4F46E5", color: "#fff", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
-                    <Plus size={18} />
-                  </button>
-                </div>
-              </form>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <div className="card" style={{ padding: 18 }}>
-                  <h3 style={chartTitle}>Gastos por categoria</h3>
-                  {pieData.length === 0 ? <EmptyNote text="Sem saídas neste mês" /> : (
-                    <ResponsiveContainer width="100%" height={220}>
-                      <PieChart>
-                        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={(d) => d.name}>
-                          {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                        </Pie>
-                        <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8 }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-                <div className="card" style={{ padding: 18 }}>
-                  <h3 style={chartTitle}>Últimos 6 meses</h3>
-                  {barData.length === 0 ? <EmptyNote text="Sem histórico ainda" /> : (
-                    <ResponsiveContainer width="100%" height={220}>
-                      <BarChart data={barData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#64748B" }} />
-                        <YAxis tick={{ fontSize: 11, fill: "#64748B" }} />
-                        <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8 }} />
-                        <Bar dataKey="income" fill="#16A34A" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="expense" fill="#DC2626" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-
-          {tab === "entries" && (
-            <div className="card" style={{ padding: 18 }}>
-              <h3 style={chartTitle}>Lançamentos do mês</h3>
-              {monthEntries.length === 0 ? <EmptyNote text="Nada por aqui ainda." /> : (
-                monthEntries.map((e) => (
-                  <div key={e.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
-                      <div style={{ fontSize: 12, color: "#64748B" }}>{e.category} · {new Date(e.date).toLocaleDateString("pt-BR")}</div>
+                  <form onSubmit={addEntry} className="card" style={{ padding: 18, marginBottom: 20 }}>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      {["expense", "income"].map((t) => (
+                        <button type="button" key={t} onClick={() => setForm((f) => ({ ...f, type: t, category: CATEGORIES[t][0] }))}
+                          style={{ flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 700,
+                            border: "1px solid " + (form.type === t ? (t === "expense" ? "#DC2626" : "#16A34A") : "#E2E8F0"),
+                            background: form.type === t ? (t === "expense" ? "#FEF2F2" : "#F0FDF4") : "#FFFFFF",
+                            color: form.type === t ? (t === "expense" ? "#B91C1C" : "#15803D") : "#64748B" }}>
+                          {t === "expense" ? "Saída" : "Entrada"}
+                        </button>
+                      ))}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <span style={{ fontWeight: 700, color: e.type === "income" ? "#16A34A" : "#DC2626" }}>{e.type === "income" ? "+" : "-"}{fmt(Number(e.amount))}</span>
-                      <button onClick={() => removeEntry(e.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 8 }}>
+                      <input placeholder="Descrição" value={form.desc} onChange={(e) => setForm((f) => ({ ...f, desc: e.target.value }))} style={inputStyle} />
+                      <input placeholder="Valor (R$)" inputMode="decimal" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} style={inputStyle} />
+                      <select value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} style={inputStyle}>
+                        {CATEGORIES[form.type].map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <button type="submit" style={primaryBtn}><Plus size={18} /></button>
+                    </div>
+                  </form>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                    <div className="card" style={{ padding: 18 }}>
+                      <h3 style={chartTitle}>Gastos por categoria</h3>
+                      {pieData.length === 0 ? <EmptyNote text="Sem saídas neste mês" /> : (
+                        <ResponsiveContainer width="100%" height={220}>
+                          <PieChart>
+                            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={(d) => d.name}>
+                              {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                            </Pie>
+                            <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8 }} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                    <div className="card" style={{ padding: 18 }}>
+                      <h3 style={chartTitle}>Últimos 6 meses</h3>
+                      {barData.length === 0 ? <EmptyNote text="Sem histórico ainda" /> : (
+                        <ResponsiveContainer width="100%" height={220}>
+                          <BarChart data={barData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                            <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#64748B" }} />
+                            <YAxis tick={{ fontSize: 11, fill: "#64748B" }} />
+                            <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8 }} />
+                            <Bar dataKey="income" fill="#16A34A" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="expense" fill="#DC2626" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )}
                     </div>
                   </div>
-                ))
+                </>
               )}
-            </div>
-          )}
 
-          {tab === "accounts" && (
-            <>
-              <form onSubmit={addAccount} className="card" style={{ padding: 18, marginBottom: 18 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1fr auto", gap: 8 }}>
-                  <input placeholder="Nome (ex: Nubank)" value={accForm.name} onChange={(e) => setAccForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
-                  <select value={accForm.type} onChange={(e) => setAccForm((f) => ({ ...f, type: e.target.value }))} style={inputStyle}>
-                    {ACCOUNT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input placeholder="Saldo (R$)" inputMode="decimal" value={accForm.balance} onChange={(e) => setAccForm((f) => ({ ...f, balance: e.target.value }))} style={inputStyle} />
-                  <button type="submit" style={primaryBtn}><Plus size={18} /></button>
-                </div>
-              </form>
-              <div className="card" style={{ padding: 18 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <h3 style={chartTitle}>Contas & caixa</h3>
-                  <span style={{ fontWeight: 800 }}>{fmt(accountsTotal)}</span>
-                </div>
-                {accounts.length === 0 ? <EmptyNote text="Nenhuma conta cadastrada." /> : accounts.map((a) => (
-                  <div key={a.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{a.name}</div>
-                      <div style={{ fontSize: 12, color: "#64748B" }}>{a.type}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <span style={{ fontWeight: 700, color: "#0891B2" }}>{fmt(a.balance)}</span>
-                      <button onClick={() => removeAccount(a.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {tab === "loans" && (
-            <>
-              <form onSubmit={addLoan} className="card" style={{ padding: 18, marginBottom: 18 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 8, marginBottom: 8 }}>
-                  <input placeholder="Nome (ex: Financiamento carro)" value={loanForm.name} onChange={(e) => setLoanForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Nº parcelas" inputMode="numeric" value={loanForm.installments} onChange={(e) => setLoanForm((f) => ({ ...f, installments: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Já pagas" inputMode="numeric" value={loanForm.paid} onChange={(e) => setLoanForm((f) => ({ ...f, paid: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Valor da parcela" inputMode="decimal" value={loanForm.installmentValue} onChange={(e) => setLoanForm((f) => ({ ...f, installmentValue: e.target.value }))} style={inputStyle} />
-                  <button type="submit" style={primaryBtn}><Plus size={18} /></button>
-                </div>
-              </form>
-              <div className="card" style={{ padding: 18 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <h3 style={chartTitle}>Financiamentos</h3>
-                  <span style={{ fontWeight: 800, color: "#F59E0B" }}>Falta pagar: {fmt(loansRemaining)}</span>
-                </div>
-                {loans.length === 0 ? <EmptyNote text="Nenhum financiamento cadastrado." /> : loans.map((l) => {
-                  const pct = Math.round((l.paid / l.installments) * 100);
-                  const remaining = (l.installments - l.paid) * l.installmentValue;
-                  return (
-                    <div key={l.id} style={{ padding: "12px 8px", borderBottom: "1px solid #F1F5F9" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              {tab === "entries" && (
+                <div className="card" style={{ padding: 18 }}>
+                  <h3 style={chartTitle}>Lançamentos do mês</h3>
+                  {monthEntries.length === 0 ? <EmptyNote text="Nada por aqui ainda." /> : (
+                    monthEntries.map((e) => (
+                      <div key={e.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
                         <div>
-                          <div style={{ fontSize: 14, fontWeight: 600 }}>{l.name}</div>
-                          <div style={{ fontSize: 12, color: "#64748B" }}>{l.paid}/{l.installments} parcelas · {fmt(l.installmentValue)} cada</div>
+                          <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
+                          <div style={{ fontSize: 12, color: "#64748B" }}>{e.category} · {new Date(e.date).toLocaleDateString("pt-BR")}</div>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ fontWeight: 700, color: "#F59E0B" }}>{fmt(remaining)}</span>
-                          <button onClick={() => removeLoan(l.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <span style={{ fontWeight: 700, color: e.type === "income" ? "#16A34A" : "#DC2626" }}>{e.type === "income" ? "+" : "-"}{fmt(Number(e.amount))}</span>
+                          <button onClick={() => removeEntry(e.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
                         </div>
                       </div>
-                      <div className="progress-bg" style={{ height: 8, borderRadius: 6, overflow: "hidden", marginBottom: 6 }}>
-                        <div style={{ height: "100%", width: `${pct}%`, background: "#4F46E5", borderRadius: 6 }} />
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => bumpLoan(l.id, 1)} style={smallBtn}>+1 parcela paga</button>
-                        <button onClick={() => bumpLoan(l.id, -1)} style={smallBtnGhost}>-1</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+                    ))
+                  )}
+                </div>
+              )}
 
-          {tab === "investments" && (
-            <>
-              <form onSubmit={addInvestment} className="card" style={{ padding: 18, marginBottom: 18 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1fr 1fr auto", gap: 8 }}>
-                  <input placeholder="Nome (ex: Tesouro Selic)" value={invForm.name} onChange={(e) => setInvForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
-                  <select value={invForm.type} onChange={(e) => setInvForm((f) => ({ ...f, type: e.target.value }))} style={inputStyle}>
-                    {INVEST_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input placeholder="Valor investido" inputMode="decimal" value={invForm.invested} onChange={(e) => setInvForm((f) => ({ ...f, invested: e.target.value }))} style={inputStyle} />
-                  <input placeholder="Valor atual" inputMode="decimal" value={invForm.current} onChange={(e) => setInvForm((f) => ({ ...f, current: e.target.value }))} style={inputStyle} />
-                  <button type="submit" style={primaryBtn}><Plus size={18} /></button>
-                </div>
-              </form>
-              <div className="card" style={{ padding: 18 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                  <h3 style={chartTitle}>Investimentos</h3>
-                  <span style={{ fontWeight: 800, color: investCurrentTotal - investedTotal >= 0 ? "#16A34A" : "#DC2626" }}>
-                    {investCurrentTotal - investedTotal >= 0 ? "+" : ""}{fmt(investCurrentTotal - investedTotal)}
-                  </span>
-                </div>
-                {investments.length === 0 ? <EmptyNote text="Nenhum investimento cadastrado." /> : investments.map((i) => {
-                  const gain = i.current - i.invested;
-                  const gainPct = i.invested ? ((gain / i.invested) * 100).toFixed(1) : "0.0";
-                  return (
-                    <div key={i.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{i.name}</div>
-                        <div style={{ fontSize: 12, color: "#64748B" }}>{i.type} · investido {fmt(i.invested)}</div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontWeight: 700 }}>{fmt(i.current)}</div>
-                          <div style={{ fontSize: 12, color: gain >= 0 ? "#16A34A" : "#DC2626" }}>{gain >= 0 ? "+" : ""}{gainPct}%</div>
-                        </div>
-                        <button onClick={() => removeInvestment(i.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
-                      </div>
+              {tab === "accounts" && (
+                <>
+                  <form onSubmit={addAccount} className="card" style={{ padding: 18, marginBottom: 18 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1fr auto", gap: 8 }}>
+                      <input placeholder="Nome (ex: Nubank)" value={accForm.name} onChange={(e) => setAccForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+                      <select value={accForm.type} onChange={(e) => setAccForm((f) => ({ ...f, type: e.target.value }))} style={inputStyle}>
+                        {ACCOUNT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <input placeholder="Saldo (R$)" inputMode="decimal" value={accForm.balance} onChange={(e) => setAccForm((f) => ({ ...f, balance: e.target.value }))} style={inputStyle} />
+                      <button type="submit" style={primaryBtn}><Plus size={18} /></button>
                     </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+                  </form>
+                  <div className="card" style={{ padding: 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <h3 style={chartTitle}>Contas & caixa</h3>
+                      <span style={{ fontWeight: 800 }}>{fmt(accountsTotal)}</span>
+                    </div>
+                    {accounts.length === 0 ? <EmptyNote text="Nenhuma conta cadastrada." /> : accounts.map((a) => (
+                      <div key={a.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 600 }}>{a.name}</div>
+                          <div style={{ fontSize: 12, color: "#64748B" }}>{a.type}</div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <span style={{ fontWeight: 700, color: "#0891B2" }}>{fmt(a.balance)}</span>
+                          <button onClick={() => removeAccount(a.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
 
-          {tab === "settings" && (
-            <div className="card" style={{ padding: 20, maxWidth: 560 }}>
-              <h3 style={chartTitle}>Conectar Supabase</h3>
-              <p style={{ fontSize: 13, color: "#64748B", marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
-                Roda esse SQL uma vez no SQL Editor do teu projeto Supabase (cria as 4 tabelas: lançamentos, contas, financiamentos, investimentos):
-              </p>
-              <pre style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 8, padding: 12, fontSize: 11, overflowX: "auto", color: "#86EFAC", marginBottom: 18, maxHeight: 260 }}>
-{SQL_SCHEMA}
-              </pre>
-              <form onSubmit={saveConfig} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <label style={labelStyle}>URL do projeto</label>
-                <input placeholder="https://xxxx.supabase.co" value={configDraft.url} onChange={(e) => setConfigDraft((c) => ({ ...c, url: e.target.value }))} style={inputStyle} />
-                <label style={labelStyle}>Chave anon (public)</label>
-                <input placeholder="eyJhbGciOi..." value={configDraft.key} onChange={(e) => setConfigDraft((c) => ({ ...c, key: e.target.value }))} style={inputStyle} />
-                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                  <button type="submit" style={primaryBtn2}>Salvar e conectar</button>
-                  {config.url && <button type="button" onClick={disconnectSupabase} style={ghostBtn}>Desconectar</button>}
-                </div>
-              </form>
-              <p style={{ fontSize: 11.5, color: "#94A3B8", marginTop: 16, lineHeight: 1.6 }}>
-                As policies acima liberam leitura/escrita pra quem tiver a chave anon — ok pra uso pessoal, mas não deixe essa chave em lugar público. Depois de conectar, tudo (lançamentos, contas, financiamentos, investimentos) passa a salvar direto no teu banco.
-              </p>
-            </div>
+              {tab === "loans" && (
+                <>
+                  <form onSubmit={addLoan} className="card" style={{ padding: 18, marginBottom: 18 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 8, marginBottom: 8 }}>
+                      <input placeholder="Nome (ex: Financiamento carro)" value={loanForm.name} onChange={(e) => setLoanForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+                      <input placeholder="Nº parcelas" inputMode="numeric" value={loanForm.installments} onChange={(e) => setLoanForm((f) => ({ ...f, installments: e.target.value }))} style={inputStyle} />
+                      <input placeholder="Já pagas" inputMode="numeric" value={loanForm.paid} onChange={(e) => setLoanForm((f) => ({ ...f, paid: e.target.value }))} style={inputStyle} />
+                      <input placeholder="Valor da parcela" inputMode="decimal" value={loanForm.installmentValue} onChange={(e) => setLoanForm((f) => ({ ...f, installmentValue: e.target.value }))} style={inputStyle} />
+                      <button type="submit" style={primaryBtn}><Plus size={18} /></button>
+                    </div>
+                  </form>
+                  <div className="card" style={{ padding: 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <h3 style={chartTitle}>Financiamentos</h3>
+                      <span style={{ fontWeight: 800, color: "#F59E0B" }}>Falta pagar: {fmt(loansRemaining)}</span>
+                    </div>
+                    {loans.length === 0 ? <EmptyNote text="Nenhum financiamento cadastrado." /> : loans.map((l) => {
+                      const pct = Math.round((l.paid / l.installments) * 100);
+                      const remaining = (l.installments - l.paid) * l.installmentValue;
+                      return (
+                        <div key={l.id} style={{ padding: "12px 8px", borderBottom: "1px solid #F1F5F9" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                            <div>
+                              <div style={{ fontSize: 14, fontWeight: 600 }}>{l.name}</div>
+                              <div style={{ fontSize: 12, color: "#64748B" }}>{l.paid}/{l.installments} parcelas · {fmt(l.installmentValue)} cada</div>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                              <span style={{ fontWeight: 700, color: "#F59E0B" }}>{fmt(remaining)}</span>
+                              <button onClick={() => removeLoan(l.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
+                            </div>
+                          </div>
+                          <div className="progress-bg" style={{ height: 8, borderRadius: 6, overflow: "hidden", marginBottom: 6 }}>
+                            <div style={{ height: "100%", width: `${pct}%`, background: "#4F46E5", borderRadius: 6 }} />
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => bumpLoan(l.id, 1)} style={smallBtn}>+1 parcela paga</button>
+                            <button onClick={() => bumpLoan(l.id, -1)} style={smallBtnGhost}>-1</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {tab === "investments" && (
+                <>
+                  <form onSubmit={addInvestment} className="card" style={{ padding: 18, marginBottom: 18 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1fr 1fr auto", gap: 8 }}>
+                      <input placeholder="Nome (ex: Tesouro Selic)" value={invForm.name} onChange={(e) => setInvForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+                      <select value={invForm.type} onChange={(e) => setInvForm((f) => ({ ...f, type: e.target.value }))} style={inputStyle}>
+                        {INVEST_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <input placeholder="Valor investido" inputMode="decimal" value={invForm.invested} onChange={(e) => setInvForm((f) => ({ ...f, invested: e.target.value }))} style={inputStyle} />
+                      <input placeholder="Valor atual" inputMode="decimal" value={invForm.current} onChange={(e) => setInvForm((f) => ({ ...f, current: e.target.value }))} style={inputStyle} />
+                      <button type="submit" style={primaryBtn}><Plus size={18} /></button>
+                    </div>
+                  </form>
+                  <div className="card" style={{ padding: 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <h3 style={chartTitle}>Investimentos</h3>
+                      <span style={{ fontWeight: 800, color: investCurrentTotal - investedTotal >= 0 ? "#16A34A" : "#DC2626" }}>
+                        {investCurrentTotal - investedTotal >= 0 ? "+" : ""}{fmt(investCurrentTotal - investedTotal)}
+                      </span>
+                    </div>
+                    {investments.length === 0 ? <EmptyNote text="Nenhum investimento cadastrado." /> : investments.map((i) => {
+                      const gain = i.current - i.invested;
+                      const gainPct = i.invested ? ((gain / i.invested) * 100).toFixed(1) : "0.0";
+                      return (
+                        <div key={i.id} className="row-hover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 8px", borderRadius: 8, borderBottom: "1px solid #F1F5F9" }}>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 600 }}>{i.name}</div>
+                            <div style={{ fontSize: 12, color: "#64748B" }}>{i.type} · investido {fmt(i.invested)}</div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontWeight: 700 }}>{fmt(i.current)}</div>
+                              <div style={{ fontSize: 12, color: gain >= 0 ? "#16A34A" : "#DC2626" }}>{gain >= 0 ? "+" : ""}{gainPct}%</div>
+                            </div>
+                            <button onClick={() => removeInvestment(i.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#94A3B8" }}><Trash2 size={16} /></button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </>
           )}
         </main>
       </div>
@@ -678,10 +686,8 @@ function EmptyNote({ text }) {
 }
 
 const inputStyle = { background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 11px", fontSize: 13.5, color: "#0F172A" };
-const labelStyle = { fontSize: 11.5, color: "#64748B", fontWeight: 600, marginTop: 2 };
-const chartTitle = { fontSize: 13, fontWeight: 700, margin: "0 0 12px", color: "#475569" };
 const primaryBtn = { background: "#4F46E5", color: "#fff", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" };
 const primaryBtn2 = { background: "#4F46E5", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", cursor: "pointer", fontWeight: 700, fontSize: 13 };
-const ghostBtn = { background: "transparent", color: "#64748B", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 16px", cursor: "pointer", fontSize: 13 };
+const chartTitle = { fontSize: 13, fontWeight: 700, margin: "0 0 12px", color: "#475569" };
 const smallBtn = { background: "#EEF2FF", color: "#4338CA", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" };
 const smallBtnGhost = { background: "#F1F5F9", color: "#64748B", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" };
