@@ -1,10 +1,60 @@
-import { useState, useEffect, useMemo } from "react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
-import {
-  Plus, Trash2, TrendingUp, TrendingDown, Wallet, Loader2,
-  LayoutDashboard, ListOrdered, Settings, Menu, X, CheckCircle2, AlertCircle,
-  Landmark, CreditCard, LineChart as LineChartIcon, LogOut, Mail, Lock,
-} from "lucide-react";
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Finanças</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types/prop-types.js"></script>
+<script src="https://unpkg.com/recharts@2/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  ::placeholder { color: #94A3B8; }
+  input, select { outline: none; font-family: inherit; }
+  input:focus, select:focus { border-color: #4F46E5 !important; }
+  .card { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+  .btn-tab { transition: all .15s ease; }
+  .row-hover:hover { background: #F1F5F9; }
+  .progress-bg { background: #E2E8F0; }
+  .animate-spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+const { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
+
+// ---- ícones simples (svg inline, trocam lucide-react) ----
+function Icon({ path, size = 16, color = "currentColor", extra }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={extra}>
+      {path}
+    </svg>
+  );
+}
+const Plus = (p) => <Icon {...p} path={<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>} />;
+const Trash2 = (p) => <Icon {...p} path={<><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></>} />;
+const TrendingUp = (p) => <Icon {...p} path={<><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>} />;
+const TrendingDown = (p) => <Icon {...p} path={<><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></>} />;
+const Wallet = (p) => <Icon {...p} path={<><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></>} />;
+const Loader2 = (p) => <Icon {...p} path={<path d="M21 12a9 9 0 1 1-6.219-8.56"/>} />;
+const LayoutDashboard = (p) => <Icon {...p} path={<><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></>} />;
+const ListOrdered = (p) => <Icon {...p} path={<><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></>} />;
+const Menu = (p) => <Icon {...p} path={<><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></>} />;
+const X = (p) => <Icon {...p} path={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} />;
+const CheckCircle2 = (p) => <Icon {...p} path={<><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></>} />;
+const AlertCircle = (p) => <Icon {...p} path={<><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>} />;
+const Landmark = (p) => <Icon {...p} path={<><line x1="3" y1="22" x2="21" y2="22"/><line x1="6" y1="18" x2="6" y2="11"/><line x1="10" y1="18" x2="10" y2="11"/><line x1="14" y1="18" x2="14" y2="11"/><line x1="18" y1="18" x2="18" y2="11"/><polygon points="12 2 20 7 4 7"/></>} />;
+const CreditCard = (p) => <Icon {...p} path={<><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></>} />;
+const LineChartIcon = (p) => <Icon {...p} path={<><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></>} />;
+const LogOut = (p) => <Icon {...p} path={<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>} />;
+const Mail = (p) => <Icon {...p} path={<><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></>} />;
+const Lock = (p) => <Icon {...p} path={<><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>} />;
 
 // ---------- Backend fixo (embutido, não editável pelo usuário final) ----------
 const SUPABASE_URL = "https://vgpdzcewjzjavyfjemin.supabase.co";
@@ -41,7 +91,7 @@ async function signIn(email, password) {
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.msg || data.error_description || "E-mail ou senha inválidos.");
-  return data; // { access_token, refresh_token, user }
+  return data;
 }
 
 // ---------- Cliente REST por tabela, autenticado com o token do usuário ----------
@@ -71,53 +121,6 @@ function makeTableClient(accessToken, table) {
   };
 }
 
-const SQL_SCHEMA = `create table entries (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid not null default auth.uid() references auth.users(id),
-  type text not null,
-  desc text not null,
-  amount numeric not null,
-  category text not null,
-  date timestamptz not null default now()
-);
-
-create table accounts (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid not null default auth.uid() references auth.users(id),
-  name text not null,
-  type text not null,
-  balance numeric not null default 0
-);
-
-create table loans (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid not null default auth.uid() references auth.users(id),
-  name text not null,
-  total numeric not null default 0,
-  installments int not null,
-  paid int not null default 0,
-  installment_value numeric not null
-);
-
-create table investments (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid not null default auth.uid() references auth.users(id),
-  name text not null,
-  type text not null,
-  invested numeric not null,
-  current_value numeric not null
-);
-
-alter table entries enable row level security;
-alter table accounts enable row level security;
-alter table loans enable row level security;
-alter table investments enable row level security;
-
-create policy "own rows" on entries for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "own rows" on accounts for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "own rows" on loans for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "own rows" on investments for all using (auth.uid() = user_id) with check (auth.uid() = user_id);`;
-
 const TABS = [
   { id: "dashboard", label: "Painel", icon: LayoutDashboard },
   { id: "entries", label: "Lançamentos", icon: ListOrdered },
@@ -126,9 +129,6 @@ const TABS = [
   { id: "investments", label: "Investimentos", icon: LineChartIcon },
 ];
 
-// =====================================================================
-// TELA DE LOGIN / CADASTRO
-// =====================================================================
 function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -179,15 +179,15 @@ function AuthScreen({ onAuthed }) {
 
         <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ position: "relative" }}>
-            <Mail size={15} color="#94A3B8" style={{ position: "absolute", left: 11, top: 12 }} />
+            <Mail size={15} color="#94A3B8" extra={{ position: "absolute", left: 11, top: 12 }} />
             <input type="email" required placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} />
           </div>
           <div style={{ position: "relative" }}>
-            <Lock size={15} color="#94A3B8" style={{ position: "absolute", left: 11, top: 12 }} />
+            <Lock size={15} color="#94A3B8" extra={{ position: "absolute", left: 11, top: 12 }} />
             <input type="password" required minLength={6} placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, width: "100%", paddingLeft: 32 }} />
           </div>
           <button type="submit" disabled={busy} style={{ ...primaryBtn2, width: "100%", justifyContent: "center", display: "flex", alignItems: "center", gap: 8, opacity: busy ? 0.7 : 1 }}>
-            {busy && <Loader2 size={14} className="animate-spin" />}
+            {busy && <Loader2 size={14} extra={{ className: "animate-spin" }} />}
             {mode === "login" ? "Entrar" : "Criar conta"}
           </button>
         </form>
@@ -200,10 +200,7 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
-// =====================================================================
-// APP PRINCIPAL
-// =====================================================================
-export default function FinanceTracker() {
+function FinanceTracker() {
   const [session, setSession] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [tab, setTab] = useState("dashboard");
@@ -229,7 +226,6 @@ export default function FinanceTracker() {
     investments: makeTableClient(session.access_token, "investments"),
   } : null, [session]);
 
-  // restaura sessão salva
   useEffect(() => {
     try {
       const raw = localStorage.getItem("finance_session");
@@ -248,7 +244,6 @@ export default function FinanceTracker() {
     setEntries([]); setAccounts([]); setLoans([]); setInvestments([]);
   }
 
-  // carrega dados quando loga
   useEffect(() => {
     if (!clients) return;
     (async () => {
@@ -270,7 +265,6 @@ export default function FinanceTracker() {
     })();
   }, [clients]);
 
-  // ---- Lançamentos ----
   async function addEntry(e) {
     e.preventDefault();
     const amount = parseFloat(String(form.amount).replace(",", "."));
@@ -286,7 +280,6 @@ export default function FinanceTracker() {
     catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
-  // ---- Contas ----
   async function addAccount(e) {
     e.preventDefault();
     const balance = parseFloat(String(accForm.balance).replace(",", "."));
@@ -302,7 +295,6 @@ export default function FinanceTracker() {
     catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
-  // ---- Financiamentos ----
   async function addLoan(e) {
     e.preventDefault();
     const total = parseFloat(String(loanForm.total).replace(",", "."));
@@ -330,7 +322,6 @@ export default function FinanceTracker() {
     catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
-  // ---- Investimentos ----
   async function addInvestment(e) {
     e.preventDefault();
     const invested = parseFloat(String(invForm.invested).replace(",", "."));
@@ -347,7 +338,6 @@ export default function FinanceTracker() {
     catch (err) { setStatus({ type: "error", text: err.message }); }
   }
 
-  // ---- Derivados ----
   const monthEntries = useMemo(() => entries.filter((e) => (e.date || "").slice(0, 7) === monthFilter), [entries, monthFilter]);
   const totals = useMemo(() => {
     const income = monthEntries.filter((e) => e.type === "income").reduce((s, e) => s + Number(e.amount), 0);
@@ -376,7 +366,7 @@ export default function FinanceTracker() {
   const netWorth = accountsTotal + investCurrentTotal - loansRemaining;
 
   if (checkingSession) {
-    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: "#64748B", fontFamily: "'Inter', system-ui, sans-serif" }}><Loader2 className="animate-spin" size={20} /></div>;
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: "#64748B", fontFamily: "'Inter', system-ui, sans-serif" }}><Loader2 extra={{ className: "animate-spin" }} size={20} /></div>;
   }
   if (!session) {
     return <AuthScreen onAuthed={handleAuthed} />;
@@ -384,19 +374,6 @@ export default function FinanceTracker() {
 
   return (
     <div style={{ fontFamily: "'Inter', system-ui, sans-serif", background: "#F8FAFC", minHeight: "100vh", color: "#0F172A" }}>
-      <style>{`
-        * { box-sizing: border-box; }
-        ::placeholder { color: #94A3B8; }
-        input, select { outline: none; }
-        input:focus, select:focus { border-color: #4F46E5 !important; }
-        .card { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
-        .btn-tab { transition: all .15s ease; }
-        .row-hover:hover { background: #F1F5F9; }
-        .progress-bg { background: #E2E8F0; }
-        .animate-spin { animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-      `}</style>
-
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <aside style={{ width: menuOpen ? 230 : 0, overflow: "hidden", transition: "width .2s ease", borderRight: menuOpen ? "1px solid #E2E8F0" : "none", background: "#FFFFFF", flexShrink: 0 }}>
           <div style={{ padding: 20, width: 230, display: "flex", flexDirection: "column", height: "100%" }}>
@@ -404,12 +381,12 @@ export default function FinanceTracker() {
               <Wallet size={20} color="#4F46E5" /> Finanças
             </div>
             {TABS.map((t) => {
-              const Icon = t.icon; const active = tab === t.id;
+              const IconC = t.icon; const active = tab === t.id;
               return (
                 <button key={t.id} className="btn-tab" onClick={() => { setTab(t.id); setMenuOpen(false); }}
                   style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", marginBottom: 6, borderRadius: 10, border: "none",
                     background: active ? "#4F46E5" : "transparent", color: active ? "#fff" : "#475569", fontSize: 14, fontWeight: 600, cursor: "pointer", textAlign: "left" }}>
-                  <Icon size={16} /> {t.label}
+                  <IconC size={16} /> {t.label}
                 </button>
               );
             })}
@@ -451,7 +428,7 @@ export default function FinanceTracker() {
 
           {loading ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#64748B", padding: "40px 0", justifyContent: "center" }}>
-              <Loader2 className="animate-spin" size={18} /> Carregando dados...
+              <Loader2 extra={{ className: "animate-spin" }} size={18} /> Carregando dados...
             </div>
           ) : (
             <>
@@ -689,3 +666,8 @@ const primaryBtn2 = { background: "#4F46E5", color: "#fff", border: "none", bord
 const chartTitle = { fontSize: 13, fontWeight: 700, margin: "0 0 12px", color: "#475569" };
 const smallBtn = { background: "#EEF2FF", color: "#4338CA", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" };
 const smallBtnGhost = { background: "#F1F5F9", color: "#64748B", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" };
+
+ReactDOM.createRoot(document.getElementById("root")).render(<FinanceTracker />);
+</script>
+</body>
+</html>
