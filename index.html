@@ -231,21 +231,19 @@ export default function FinanceTracker() {
 
   // restaura sessão salva
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await window.storage.get("session", false);
-        if (res?.value) setSession(JSON.parse(res.value));
-      } catch (e) {}
-      setCheckingSession(false);
-    })();
+    try {
+      const raw = localStorage.getItem("finance_session");
+      if (raw) setSession(JSON.parse(raw));
+    } catch (e) {}
+    setCheckingSession(false);
   }, []);
 
-  async function handleAuthed(newSession) {
-    try { await window.storage.set("session", JSON.stringify(newSession), false); } catch (e) {}
+  function handleAuthed(newSession) {
+    try { localStorage.setItem("finance_session", JSON.stringify(newSession)); } catch (e) {}
     setSession(newSession);
   }
-  async function logout() {
-    try { await window.storage.delete("session", false); } catch (e) {}
+  function logout() {
+    try { localStorage.removeItem("finance_session"); } catch (e) {}
     setSession(null);
     setEntries([]); setAccounts([]); setLoans([]); setInvestments([]);
   }
